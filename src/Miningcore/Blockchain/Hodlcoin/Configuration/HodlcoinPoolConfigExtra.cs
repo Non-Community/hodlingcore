@@ -5,7 +5,7 @@ namespace Miningcore.Blockchain.Hodlcoin.Configuration;
 
 public class HodlcoinPoolConfigExtra
 {
-    public BitcoinAddressType AddressType { get; set; } = BitcoinAddressType.Legacy;
+    public HodlcoinAddressType AddressType { get; set; } = HodlcoinAddressType.Legacy;
 
     /// <summary>
     /// Maximum number of tracked jobs.

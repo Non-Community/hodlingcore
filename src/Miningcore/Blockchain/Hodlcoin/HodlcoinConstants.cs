@@ -3,7 +3,7 @@ using System.Numerics;
 
 namespace Miningcore.Blockchain.Hodlcoin;
 
-public enum BitcoinAddressType
+public enum HodlcoinAddressType
 {
     /// <summary>
     /// Legacy address
@@ -21,7 +21,7 @@ public enum BitcoinAddressType
     BCash,
 }
 
-public enum BitcoinTransactionCategory
+public enum HodlcoinTransactionCategory
 {
     /// <summary>
     /// wallet sending payment
@@ -49,7 +49,7 @@ public enum BitcoinTransactionCategory
     Orphan
 }
 
-public class BitcoinConstants
+public class HodlcoinConstants
 {
     public const int ExtranoncePlaceHolderLength = 8;
     public const decimal SatoshisPerBitcoin = 100000000;
@@ -70,7 +70,7 @@ public class BitcoinConstants
     public const string ZmqPublisherTopicTxRaw = "rawtx";
 }
 
-public enum BitcoinRPCErrorCode
+public enum HodlcoinRPCErrorCode
 {
     //! Standard JSON-RPC 2.0 errors
     // RPC_INVALID_REQUEST is internally mapped to HTTP_BAD_REQUEST (400).
@@ -130,7 +130,7 @@ public enum BitcoinRPCErrorCode
     RPC_WALLET_NOT_SPECIFIED = -19, //!< No wallet specified (error when there are multiple wallets loaded)
 }
 
-public static class BitcoinCommands
+public static class HodlcoinCommands
 {
     public const string GetBalance = "getbalance";
     public const string ListUnspent = "listunspent";

@@ -50,15 +50,15 @@ public class HodlcoinPool : PoolBase
         if(request.Id == null)
             throw new StratumException(StratumError.MinusOne, "missing request id");
 
-        var context = connection.ContextAs<BitcoinWorkerContext>();
+        var context = connection.ContextAs<HodlcoinWorkerContext>();
         var requestParams = request.ParamsAs<string[]>();
 
         var data = new object[]
         {
             new object[]
             {
-                new object[] { BitcoinStratumMethods.SetDifficulty, connection.ConnectionId },
-                new object[] { BitcoinStratumMethods.MiningNotify, connection.ConnectionId }
+                new object[] { HodlcoinStratumMethods.SetDifficulty, connection.ConnectionId },
+                new object[] { HodlcoinStratumMethods.MiningNotify, connection.ConnectionId }
             }
         }
         .Concat(manager.GetSubscriberData(connection))
@@ -82,8 +82,8 @@ public class HodlcoinPool : PoolBase
         }
 
         // send intial update
-        await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
-        await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, currentJobParams);
+        await connection.NotifyAsync(HodlcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
+        await connection.NotifyAsync(HodlcoinStratumMethods.MiningNotify, currentJobParams);
     }
 
     protected virtual async Task OnAuthorizeAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
@@ -93,7 +93,7 @@ public class HodlcoinPool : PoolBase
         if(request.Id == null)
             throw new StratumException(StratumError.MinusOne, "missing request id");
 
-        var context = connection.ContextAs<BitcoinWorkerContext>();
+        var context = connection.ContextAs<HodlcoinWorkerContext>();
         var requestParams = request.ParamsAs<string[]>();
         var workerValue = requestParams?.Length > 0 ? requestParams[0] : null;
         var password = requestParams?.Length > 1 ? requestParams[1] : null;
@@ -130,7 +130,7 @@ public class HodlcoinPool : PoolBase
 
                 logger.Info(() => $"[{connection.ConnectionId}] Setting static difficulty of {staticDiff.Value}");
 
-                await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
+                await connection.NotifyAsync(HodlcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
             }
         }
 
@@ -153,7 +153,7 @@ public class HodlcoinPool : PoolBase
     protected virtual async Task OnSubmitAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
     {
         var request = tsRequest.Value;
-        var context = connection.ContextAs<BitcoinWorkerContext>();
+        var context = connection.ContextAs<HodlcoinWorkerContext>();
 
         try
         {
@@ -221,7 +221,7 @@ public class HodlcoinPool : PoolBase
     private async Task OnSuggestDifficultyAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest)
     {
         var request = tsRequest.Value;
-        var context = connection.ContextAs<BitcoinWorkerContext>();
+        var context = connection.ContextAs<HodlcoinWorkerContext>();
 
         // acknowledge
         await connection.RespondAsync(true, request.Id);
@@ -236,7 +236,7 @@ public class HodlcoinPool : PoolBase
             if(requestedDiff > poolEndpoint.Difficulty)
             {
                 context.SetDifficulty(requestedDiff);
-                await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
+                await connection.NotifyAsync(HodlcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
 
                 logger.Info(() => $"[{connection.ConnectionId}] Difficulty set to {requestedDiff} as requested by miner");
             }
@@ -251,7 +251,7 @@ public class HodlcoinPool : PoolBase
     private async Task OnConfigureMiningAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest)
     {
         var request = tsRequest.Value;
-        var context = connection.ContextAs<BitcoinWorkerContext>();
+        var context = connection.ContextAs<HodlcoinWorkerContext>();
 
         var requestParams = request.ParamsAs<JToken[]>();
         var extensions = requestParams[0].ToObject<string[]>();
@@ -264,11 +264,11 @@ public class HodlcoinPool : PoolBase
             {
                 switch(extension)
                 {
-                    case BitcoinStratumExtensions.VersionRolling:
+                    case HodlcoinStratumExtensions.VersionRolling:
                         ConfigureVersionRolling(connection, context, extensionParams, result);
                         break;
 
-                    case BitcoinStratumExtensions.MinimumDiff:
+                    case HodlcoinStratumExtensions.MinimumDiff:
                         ConfigureMinimumDiff(connection, context, extensionParams, result);
                         break;
                 }
@@ -278,29 +278,29 @@ public class HodlcoinPool : PoolBase
         await connection.RespondAsync(result, request.Id);
     }
 
-    private void ConfigureVersionRolling(StratumConnection connection, BitcoinWorkerContext context,
+    private void ConfigureVersionRolling(StratumConnection connection, HodlcoinWorkerContext context,
         IReadOnlyDictionary<string, JToken> extensionParams, Dictionary<string, object> result)
     {
-        //var requestedBits = extensionParams[BitcoinStratumExtensions.VersionRollingBits].Value<int>();
-        var requestedMask = BitcoinConstants.VersionRollingPoolMask;
+        //var requestedBits = extensionParams[HodlcoinStratumExtensions.VersionRollingBits].Value<int>();
+        var requestedMask = HodlcoinConstants.VersionRollingPoolMask;
 
-        if(extensionParams.TryGetValue(BitcoinStratumExtensions.VersionRollingMask, out var requestedMaskValue))
+        if(extensionParams.TryGetValue(HodlcoinStratumExtensions.VersionRollingMask, out var requestedMaskValue))
             requestedMask = uint.Parse(requestedMaskValue.Value<string>(), NumberStyles.HexNumber);
 
         // Compute effective mask
         context.VersionRollingMask = BitcoinConstants.VersionRollingPoolMask & requestedMask;
 
         // enabled
-        result[BitcoinStratumExtensions.VersionRolling] = true;
-        result[BitcoinStratumExtensions.VersionRollingMask] = context.VersionRollingMask.Value.ToStringHex8();
+        result[HodlcoinStratumExtensions.VersionRolling] = true;
+        result[HodlcoinStratumExtensions.VersionRollingMask] = context.VersionRollingMask.Value.ToStringHex8();
 
-        logger.Info(() => $"[{connection.ConnectionId}] Using version-rolling mask {result[BitcoinStratumExtensions.VersionRollingMask]}");
+        logger.Info(() => $"[{connection.ConnectionId}] Using version-rolling mask {result[HodlcoinStratumExtensions.VersionRollingMask]}");
     }
 
-    private void ConfigureMinimumDiff(StratumConnection connection, BitcoinWorkerContext context,
+    private void ConfigureMinimumDiff(StratumConnection connection, HodlcoinWorkerContext context,
         IReadOnlyDictionary<string, JToken> extensionParams, Dictionary<string, object> result)
     {
-        var requestedDiff = extensionParams[BitcoinStratumExtensions.MinimumDiffValue].Value<double>();
+        var requestedDiff = extensionParams[HodlcoinStratumExtensions.MinimumDiffValue].Value<double>();
 
         // client may suggest higher-than-base difficulty, but not a lower one
         var poolEndpoint = poolConfig.Ports[connection.LocalEndpoint.Port];
@@ -313,7 +313,7 @@ public class HodlcoinPool : PoolBase
             logger.Info(() => $"[{connection.ConnectionId}] Difficulty set to {requestedDiff} as requested by miner. VarDiff now disabled.");
 
             // enabled
-            result[BitcoinStratumExtensions.MinimumDiff] = true;
+            result[HodlcoinStratumExtensions.MinimumDiff] = true;
         }
     }
 
@@ -325,20 +325,20 @@ public class HodlcoinPool : PoolBase
 
         await Guard(() => ForEachMinerAsync(async (connection, ct) =>
         {
-            var context = connection.ContextAs<BitcoinWorkerContext>();
+            var context = connection.ContextAs<HodlcoinWorkerContext>();
 
             // varDiff: if the client has a pending difficulty change, apply it now
             if(context.ApplyPendingDifficulty())
-                await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
+                await connection.NotifyAsync(HodlcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
 
             // send job
-            await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, currentJobParams);
+            await connection.NotifyAsync(HodlcoinStratumMethods.MiningNotify, currentJobParams);
         }));
     }
 
     public override double HashrateFromShares(double shares, double interval)
     {
-        var multiplier = BitcoinConstants.Pow2x32;
+        var multiplier = HodlcoinConstants.Pow2x32;
         var result = shares * multiplier / interval;
 
         if(coin.HashrateMultiplier.HasValue)
@@ -353,14 +353,14 @@ public class HodlcoinPool : PoolBase
 
     public override void Configure(PoolConfig pc, ClusterConfig cc)
     {
-        coin = pc.Template.As<BitcoinTemplate>();
+        coin = pc.Template.As<HodlcoinTemplate>();
 
         base.Configure(pc, cc);
     }
 
     protected override async Task SetupJobManager(CancellationToken ct)
     {
-        manager = ctx.Resolve<BitcoinJobManager>(
+        manager = ctx.Resolve<HodlcoinJobManager>(
             new TypedParameter(typeof(IExtraNonceProvider), new BitcoinExtraNonceProvider(poolConfig.Id, clusterConfig.InstanceId)));
 
         manager.Configure(poolConfig, clusterConfig);
@@ -399,7 +399,7 @@ public class HodlcoinPool : PoolBase
 
     protected override WorkerContextBase CreateWorkerContext()
     {
-        return new BitcoinWorkerContext();
+        return new HodlcoinWorkerContext();
     }
 
     protected override async Task OnRequestAsync(StratumConnection connection,
@@ -411,36 +411,36 @@ public class HodlcoinPool : PoolBase
         {
             switch(request.Method)
             {
-                case BitcoinStratumMethods.Subscribe:
+                case HodlcoinStratumMethods.Subscribe:
                     await OnSubscribeAsync(connection, tsRequest);
                     break;
 
-                case BitcoinStratumMethods.Authorize:
+                case HodlcoinStratumMethods.Authorize:
                     await OnAuthorizeAsync(connection, tsRequest, ct);
                     break;
 
-                case BitcoinStratumMethods.SubmitShare:
+                case HodlcoinStratumMethods.SubmitShare:
                     await OnSubmitAsync(connection, tsRequest, ct);
                     break;
 
-                case BitcoinStratumMethods.SuggestDifficulty:
+                case HodlcoinStratumMethods.SuggestDifficulty:
                     await OnSuggestDifficultyAsync(connection, tsRequest);
                     break;
 
-                case BitcoinStratumMethods.MiningConfigure:
+                case HodlcoinStratumMethods.MiningConfigure:
                     await OnConfigureMiningAsync(connection, tsRequest);
                     // ignored
                     break;
 
-                case BitcoinStratumMethods.ExtraNonceSubscribe:
+                case HodlcoinStratumMethods.ExtraNonceSubscribe:
                     await connection.RespondAsync(true, request.Id);
                     break;
 
-                case BitcoinStratumMethods.GetTransactions:
+                case HodlcoinStratumMethods.GetTransactions:
                     // ignored
                     break;
 
-                case BitcoinStratumMethods.MiningMultiVersion:
+                case HodlcoinStratumMethods.MiningMultiVersion:
                     // ignored
                     break;
 
@@ -464,8 +464,8 @@ public class HodlcoinPool : PoolBase
 
         if(connection.Context.ApplyPendingDifficulty())
         {
-            await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { connection.Context.Difficulty });
-            await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, currentJobParams);
+            await connection.NotifyAsync(HodlcoinStratumMethods.SetDifficulty, new object[] { connection.Context.Difficulty });
+            await connection.NotifyAsync(HodlcoinStratumMethods.MiningNotify, currentJobParams);
         }
     }
 

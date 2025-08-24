@@ -1,8 +1,8 @@
 namespace Miningcore.Blockchain.Hodlcoin;
 
-public class BitcoinExtraNonceProvider : ExtraNonceProviderBase
+public class HodlcoinExtraNonceProvider : ExtraNonceProviderBase
 {
-    public BitcoinExtraNonceProvider(string poolId, byte? clusterInstanceId) : base(poolId, 4, clusterInstanceId)
+    public HodlcoinExtraNonceProvider(string poolId, byte? clusterInstanceId) : base(poolId, 4, clusterInstanceId)
     {
     }
 }

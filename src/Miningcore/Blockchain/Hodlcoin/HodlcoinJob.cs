@@ -1,8 +1,8 @@
 using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text;
-using Miningcore.Blockchain.Bitcoin.Configuration;
-using Miningcore.Blockchain.Bitcoin.DaemonResponses;
+using Miningcore.Blockchain.Hodlcoin.Configuration;
+using Miningcore.Blockchain.Hodlcoin.DaemonResponses;
 using Miningcore.Configuration;
 using Miningcore.Crypto;
 using Miningcore.Extensions;
@@ -17,7 +17,7 @@ using Transaction = NBitcoin.Transaction;
 
 namespace Miningcore.Blockchain.Hodlcoin;
 
-public class BitcoinJob
+public class HodlcoinJob
 {
     protected IHashAlgorithm blockHasher;
     protected IMasterClock clock;
@@ -31,8 +31,8 @@ public class BitcoinJob
 
     protected Network network;
     protected IDestination poolAddressDestination;
-    protected BitcoinTemplate coin;
-    private BitcoinTemplate.BitcoinNetworkParams networkParams;
+    protected HodlcoinTemplate coin;
+    private HodlcoinTemplate.HodlcoinNetworkParams networkParams;
     protected readonly ConcurrentDictionary<string, bool> submissions = new(StringComparer.OrdinalIgnoreCase);
     protected uint256 blockTargetValue;
     protected byte[] coinbaseFinal;
@@ -310,7 +310,7 @@ public class BitcoinJob
     protected virtual (Share Share, string BlockHex) ProcessShareInternal(
         StratumConnection worker, string extraNonce2, uint nTime, uint nonce, uint? versionBits)
     {
-        var context = worker.ContextAs<BitcoinWorkerContext>();
+        var context = worker.ContextAs<HodlcoinWorkerContext>();
         var extraNonce1 = context.ExtraNonce1;
 
         // build coinbase
@@ -550,7 +550,7 @@ public class BitcoinJob
     public string JobId { get; protected set; }
 
     public void Init(BlockTemplate blockTemplate, string jobId,
-        PoolConfig pc, BitcoinPoolConfigExtra extraPoolConfig,
+        PoolConfig pc, HodlcoinPoolConfigExtra extraPoolConfig,
         ClusterConfig cc, IMasterClock clock,
         IDestination poolAddressDestination, Network network,
         bool isPoS, double shareMultiplier, IHashAlgorithm coinbaseHasher,
@@ -566,7 +566,7 @@ public class BitcoinJob
         Contract.RequiresNonNull(blockHasher);
         Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(jobId));
 
-        coin = pc.Template.As<BitcoinTemplate>();
+        coin = pc.Template.As<HodlcoinTemplate>();
         networkParams = coin.GetNetwork(network.ChainName);
         txVersion = coin.CoinbaseTxVersion;
         this.network = network;
@@ -582,7 +582,7 @@ public class BitcoinJob
 
         Difficulty = new Target(System.Numerics.BigInteger.Parse(BlockTemplate.Target, NumberStyles.HexNumber)).Difficulty;
 
-        extraNoncePlaceHolderLength = BitcoinConstants.ExtranoncePlaceHolderLength;
+        extraNoncePlaceHolderLength = HodlcoinConstants.ExtranoncePlaceHolderLength;
         this.isPoS = isPoS;
         this.shareMultiplier = shareMultiplier;
 
@@ -666,7 +666,7 @@ public class BitcoinJob
         Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(nTime));
         Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(nonce));
 
-        var context = worker.ContextAs<BitcoinWorkerContext>();
+        var context = worker.ContextAs<HodlcoinWorkerContext>();
 
         // validate nTime
         if(nTime.Length != 8)
