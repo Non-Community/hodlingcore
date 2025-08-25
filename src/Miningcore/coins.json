@@ -1402,6 +1402,13 @@
         "explorerTxLink": "http://hfrco.in/blockcrawler/tx/{0}",
         "explorerAccountLink": "http://hfrco.in/blockcrawler/address/{0}"
     },
+    "hodlcoin": {
+        "name": "hodlcoin",
+        "family": "hodlcoin",
+        "addressPrefix": [40],  // H
+        "coinbaseTxSize": 1000,
+        "rpcPort": 11989
+    },
     "indexchain": {
         "name": "IndexChain",
         "symbol": "IDX",
