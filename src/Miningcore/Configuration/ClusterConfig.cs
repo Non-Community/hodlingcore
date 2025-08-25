@@ -522,19 +522,17 @@ public enum HodlcoinSubfamily
 
     }
 
-public partial class BitcoinTemplate : CoinTemplate
+public partial class HodlcoinTemplate : CoinTemplate
 {
-    public class BitcoinNetworkParams
+    public class HodlcoinNetworkParams
     {
-        /// <summary>
-        /// Arbitrary extension data
-        /// </summary>
+        /// <summary>Arbitrary extension data</summary>
         [JsonExtensionData]
         public IDictionary<string, object> Extra { get; set; }
     }
 
     [JsonProperty(Order = -7, DefaultValueHandling = DefaultValueHandling.IgnoreAndPopulate)]
-    [DefaultValue(BitcoinSubfamily.None)]
+    [DefaultValue(HodlcoinSubfamily.None)]
     [JsonConverter(typeof(StringEnumConverter), true)]
     public HodlcoinSubfamily Subfamily { get; set; }
 
@@ -549,9 +547,7 @@ public partial class BitcoinTemplate : CoinTemplate
     [DefaultValue(1u)]
     public uint CoinbaseTxVersion { get; set; }
 
-    /// <summary>
-    /// Default transaction comment for coins that REQUIRE tx comments
-    /// </summary>
+    /// <summary>Default transaction comment for coins that REQUIRE tx comments</summary>
     public string CoinbaseTxComment { get; set; }
 
     [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
@@ -586,15 +582,15 @@ public partial class BitcoinTemplate : CoinTemplate
     public JToken BlockTemplateRpcExtraParams { get; set; }
 
     [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
-    public Dictionary<string, BitcoinNetworkParams> Networks { get; set; }
+    public Dictionary<string, HodlcoinNetworkParams> Networks { get; set; }
 
+    // Keep spelling consistent with upstream to avoid surprises.
     [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
     public int? CoinbaseMinConfimations { get; set; }
 
     [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
     public string BlockSerializer { get; set; }
 }
-
 #endregion // Coin Definitions
 
 public enum PayoutScheme
