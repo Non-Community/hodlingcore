@@ -5,6 +5,7 @@ using System.Text;
 using Miningcore.Blockchain.Hodlcoin.Configuration;
 using Miningcore.Blockchain.Hodlcoin.DaemonResponses;
 using Miningcore.Configuration;
+using Miningcore.Contracts;
 using Miningcore.Crypto;
 using Miningcore.Extensions;
 using Miningcore.Stratum;
@@ -13,7 +14,6 @@ using Miningcore.Util;
 using NBitcoin;
 using NBitcoin.DataEncoders;
 using Newtonsoft.Json.Linq;
-using Contract = Miningcore.Contracts.Contract;
 using Transaction = NBitcoin.Transaction;
 
 namespace Miningcore.Blockchain.Hodlcoin;
@@ -28,12 +28,17 @@ public class HodlcoinJob
     protected IHashAlgorithm headerHasher;
     protected bool isPoS;
     protected string txComment;
+
     protected PayeeBlockTemplateExtra payeeParameters;
+    protected MasterNodeBlockTemplateExtra masterNodeParameters;
+    protected FounderBlockTemplateExtra founderParameters;
+    protected MinerFundTemplateExtra minerFundParameters;
 
     protected Network network;
     protected IDestination poolAddressDestination;
     protected HodlcoinTemplate coin;
     private HodlcoinTemplate.HodlcoinNetworkParams networkParams;
+
     protected readonly ConcurrentDictionary<string, bool> submissions = new(StringComparer.OrdinalIgnoreCase);
     protected uint256 blockTargetValue;
     protected byte[] coinbaseFinal;
@@ -43,7 +48,7 @@ public class HodlcoinJob
     protected string[] merkleBranchesHex;
     protected MerkleTree mt;
 
-    // birthdays for HODLcoin’s 88-byte header
+    // --- HODL: two 4-byte extensions appended to the 80-byte header ---
     private uint birthdayA;
     private uint birthdayB;
 
@@ -58,20 +63,51 @@ public class HodlcoinJob
     // serialization constants
     protected byte[] scriptSigFinalBytes;
 
-    protected static byte[] sha256Empty = new byte[32];
-    protected uint txVersion = 1u; // transaction version (currently 1) - see https://en.bitcoin.it/wiki/Transaction
+    protected static readonly byte[] sha256Empty = new byte[32];
+    protected uint txVersion = 1u; // coinbase tx version
 
     protected static uint txInputCount = 1u;
-    protected static uint txInPrevOutIndex = (uint)(Math.Pow(2, 32) - 1);
+    protected static readonly uint txInPrevOutIndex = uint.MaxValue;
     protected static uint txInSequence;
     protected static uint txLockTime;
+
+    #region Template helpers (HODL birthdays)
+
+    public void SetBirthdaysFromTemplate(BlockTemplate tpl)
+    {
+        birthdayA = TryGetUintTemplateExtra(tpl, "birthdayA")
+                 ?? TryGetUintTemplateExtra(tpl, "nBirthdayA")
+                 ?? TryGetUintTemplateExtra(tpl, "birthday_a")
+                 ?? 0u;
+
+        birthdayB = TryGetUintTemplateExtra(tpl, "birthdayB")
+                 ?? TryGetUintTemplateExtra(tpl, "nBirthdayB")
+                 ?? TryGetUintTemplateExtra(tpl, "birthday_b")
+                 ?? 0u;
+    }
+
+    private static uint? TryGetUintTemplateExtra(BlockTemplate tpl, string key)
+    {
+        if (tpl?.Extra is JObject jo && jo.TryGetValue(key, StringComparison.OrdinalIgnoreCase, out var tok))
+        {
+            if (tok.Type == JTokenType.Integer)
+                return (uint) tok.Value<long>();
+
+            if (tok.Type == JTokenType.String &&
+                uint.TryParse(tok.Value<string>(), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var v))
+                return v;
+        }
+        return null;
+    }
+
+    #endregion
+
+    #region Coinbase, Merkle, Block serialization
 
     protected virtual void BuildMerkleBranches()
     {
         var transactionHashes = BlockTemplate.Transactions
-            .Select(tx => (tx.TxId ?? tx.Hash)
-                .HexToByteArray()
-                .ReverseInPlace())
+            .Select(tx => (tx.TxId ?? tx.Hash).HexToByteArray().ReverseInPlace())
             .ToArray();
 
         mt = new MerkleTree(transactionHashes);
@@ -83,7 +119,7 @@ public class HodlcoinJob
 
     protected virtual void BuildCoinbase()
     {
-        // generate script parts
+        // scriptSig initial part
         var sigScriptInitial = GenerateScriptSigInitial();
         var sigScriptInitialBytes = sigScriptInitial.ToBytes();
 
@@ -95,57 +131,55 @@ public class HodlcoinJob
         // output transaction
         txOut = CreateOutputTransaction();
 
-        // build coinbase initial
-        using (var stream = new MemoryStream())
+        // coinbase initial
+        using(var stream = new MemoryStream())
         {
             var bs = new BitcoinStream(stream, true);
 
             // version
             bs.ReadWrite(ref txVersion);
 
-            // timestamp for POS coins
-            if (isPoS)
+            // POS coins embed timestamp in tx
+            if(isPoS)
             {
                 var timestamp = BlockTemplate.CurTime;
                 bs.ReadWrite(ref timestamp);
             }
 
-            // serialize (simulated) input transaction
+            // input
             bs.ReadWriteAsVarInt(ref txInputCount);
             bs.ReadWrite(ref sha256Empty);
             bs.ReadWrite(ref txInPrevOutIndex);
 
-            // signature script initial part
+            // signature script initial
             bs.ReadWriteAsVarInt(ref sigScriptLength);
             bs.ReadWrite(ref sigScriptInitialBytes);
 
-            // done
             coinbaseInitial = stream.ToArray();
             coinbaseInitialHex = coinbaseInitial.ToHexString();
         }
 
-        // build coinbase final
-        using (var stream = new MemoryStream())
+        // coinbase final
+        using(var stream = new MemoryStream())
         {
             var bs = new BitcoinStream(stream, true);
 
-            // signature script final part
+            // signature script final
             bs.ReadWrite(ref scriptSigFinalBytes);
 
-            // tx in sequence
+            // sequence
             bs.ReadWrite(ref txInSequence);
 
-            // serialize output transaction
+            // outputs
             var txOutBytes = SerializeOutputTransaction(txOut);
             bs.ReadWrite(ref txOutBytes);
 
-            // misc
+            // locktime
             bs.ReadWrite(ref txLockTime);
 
-            // Extension point
+            // extension point
             AppendCoinbaseFinal(bs);
 
-            // done
             coinbaseFinal = stream.ToArray();
             coinbaseFinalHex = coinbaseFinal.ToHexString();
         }
@@ -153,13 +187,13 @@ public class HodlcoinJob
 
     protected virtual void AppendCoinbaseFinal(BitcoinStream bs)
     {
-        if (!string.IsNullOrEmpty(txComment))
+        if(!string.IsNullOrEmpty(txComment))
         {
             var data = Encoding.ASCII.GetBytes(txComment);
             bs.ReadWriteAsVarString(ref data);
         }
 
-        if (coin.HasMasterNodes && !string.IsNullOrEmpty(masterNodeParameters.CoinbasePayload))
+        if(coin.HasMasterNodes && !string.IsNullOrEmpty(masterNodeParameters.CoinbasePayload))
         {
             var data = masterNodeParameters.CoinbasePayload.HexToByteArray();
             bs.ReadWriteAsVarString(ref data);
@@ -170,40 +204,40 @@ public class HodlcoinJob
     {
         var withDefaultWitnessCommitment = !string.IsNullOrEmpty(BlockTemplate.DefaultWitnessCommitment);
 
-        var outputCount = (uint)tx.Outputs.Count;
-        if (withDefaultWitnessCommitment)
+        var outputCount = (uint) tx.Outputs.Count;
+        if(withDefaultWitnessCommitment)
             outputCount++;
 
-        using (var stream = new MemoryStream())
+        using(var stream = new MemoryStream())
         {
             var bs = new BitcoinStream(stream, true);
 
-            // write output count
+            // count
             bs.ReadWriteAsVarInt(ref outputCount);
 
             long amount;
             byte[] raw;
             uint rawLength;
 
-            // serialize witness (segwit)
-            if (withDefaultWitnessCommitment)
+            // witness (segwit)
+            if(withDefaultWitnessCommitment)
             {
                 amount = 0;
                 raw = BlockTemplate.DefaultWitnessCommitment.HexToByteArray();
-                rawLength = (uint)raw.Length;
+                rawLength = (uint) raw.Length;
 
                 bs.ReadWrite(ref amount);
                 bs.ReadWriteAsVarInt(ref rawLength);
                 bs.ReadWrite(ref raw);
             }
 
-            // serialize outputs
-            foreach (var output in tx.Outputs)
+            // outputs
+            foreach(var output in tx.Outputs)
             {
                 amount = output.Value.Satoshi;
                 var outScript = output.ScriptPubKey;
                 raw = outScript.ToBytes(true);
-                rawLength = (uint)raw.Length;
+                rawLength = (uint) raw.Length;
 
                 bs.ReadWrite(ref amount);
                 bs.ReadWriteAsVarInt(ref rawLength);
@@ -216,22 +250,21 @@ public class HodlcoinJob
 
     protected virtual Script GenerateScriptSigInitial()
     {
-        var now = ((DateTimeOffset)clock.Now).ToUnixTimeSeconds();
+        var now = ((DateTimeOffset) clock.Now).ToUnixTimeSeconds();
 
-        // script ops
         var ops = new List<Op>();
 
-        // push block height
+        // block height
         ops.Add(Op.GetPushOp(BlockTemplate.Height));
 
-        // optionally push aux-flags
-        if (!coin.CoinbaseIgnoreAuxFlags && !string.IsNullOrEmpty(BlockTemplate.CoinbaseAux?.Flags))
+        // aux-flags
+        if(!coin.CoinbaseIgnoreAuxFlags && !string.IsNullOrEmpty(BlockTemplate.CoinbaseAux?.Flags))
             ops.Add(Op.GetPushOp(BlockTemplate.CoinbaseAux.Flags.HexToByteArray()));
 
-        // push timestamp
+        // timestamp
         ops.Add(Op.GetPushOp(now));
 
-        // push placeholder
+        // extranonce placeholder
         ops.Add(Op.GetPushOp(0));
 
         return new Script(ops);
@@ -242,19 +275,19 @@ public class HodlcoinJob
         rewardToPool = new Money(BlockTemplate.CoinbaseValue, MoneyUnit.Satoshi);
         var tx = Transaction.Create(network);
 
-        if (coin.HasPayee)
+        if(coin.HasPayee)
             rewardToPool = CreatePayeeOutput(tx, rewardToPool);
 
-        if (coin.HasMasterNodes)
+        if(coin.HasMasterNodes)
             rewardToPool = CreateMasternodeOutputs(tx, rewardToPool);
 
-        if (coin.HasFounderFee)
+        if(coin.HasFounderFee)
             rewardToPool = CreateFounderOutputs(tx, rewardToPool);
 
-        if (coin.HasMinerFund)
+        if(coin.HasMinerFund)
             rewardToPool = CreateMinerFundOutputs(tx, rewardToPool);
 
-        // Remaining amount goes to pool
+        // remainder to pool
         tx.Outputs.Add(rewardToPool, poolAddressDestination);
 
         return tx;
@@ -262,7 +295,7 @@ public class HodlcoinJob
 
     protected virtual Money CreatePayeeOutput(Transaction tx, Money reward)
     {
-        if (payeeParameters?.PayeeAmount != null && payeeParameters.PayeeAmount.Value > 0)
+        if(payeeParameters?.PayeeAmount != null && payeeParameters.PayeeAmount.Value > 0)
         {
             var payeeReward = new Money(payeeParameters.PayeeAmount.Value, MoneyUnit.Satoshi);
             reward -= payeeReward;
@@ -285,16 +318,23 @@ public class HodlcoinJob
         return submissions.TryAdd(key, true);
     }
 
-    // === HODLcoin custom header serialization (88 bytes) ===
-    protected byte[] SerializeHeader(Span<byte> coinbaseHash, uint nTime, uint nonce, uint? versionMask, uint? versionBits)
+    /// <summary>
+    /// HODL: serialize 88-byte header [ver|prev|merkle|time|bits|nonce|birthdayA|birthdayB]
+    /// </summary>
+    protected virtual byte[] SerializeHeader(Span<byte> coinbaseHash, uint nTime, uint nonce, uint? versionMask, uint? versionBits)
     {
+        // merkle (internal)
         var merkleRoot = mt.WithFirst(coinbaseHash.ToArray());
 
+        // version (with optional version-rolling)
         var version = BlockTemplate.Version;
-        if (versionMask.HasValue && versionBits.HasValue)
+        if(versionMask.HasValue && versionBits.HasValue)
             version = (version & ~versionMask.Value) | (versionBits.Value & versionMask.Value);
 
+        // prevhash (internal bytes)
         var prevHash = uint256.Parse(BlockTemplate.PreviousBlockhash).ToBytes();
+
+        // bits (compact) as uint32
         var bitsCompact = new Target(Encoders.Hex.DecodeData(BlockTemplate.Bits)).ToCompact();
 
         var header = new byte[88];
@@ -318,27 +358,32 @@ public class HodlcoinJob
         var context = worker.ContextAs<HodlcoinWorkerContext>();
         var extraNonce1 = context.ExtraNonce1;
 
+        // coinbase
         var coinbase = SerializeCoinbase(extraNonce1, extraNonce2);
         Span<byte> coinbaseHash = stackalloc byte[32];
         coinbaseHasher.Digest(coinbase, coinbaseHash);
 
+        // header (88 bytes) & hash
         var headerBytes = SerializeHeader(coinbaseHash, nTime, nonce, context.VersionRollingMask, versionBits);
         Span<byte> headerHash = stackalloc byte[32];
-        headerHasher.Digest(headerBytes, headerHash, (ulong)nTime, BlockTemplate, coin, networkParams);
+        headerHasher.Digest(headerBytes, headerHash, nTime, BlockTemplate, coin, networkParams);
         var headerValue = new uint256(headerHash);
 
-        var shareDiff = (double)new BigRational(BitcoinConstants.Diff1, headerHash.ToBigInteger()) * shareMultiplier;
+        // share difficulty
+        var shareDiff = (double) new BigRational(HodlcoinConstants.Diff1, headerHash.ToBigInteger()) * shareMultiplier;
         var stratumDifficulty = context.Difficulty;
         var ratio = shareDiff / stratumDifficulty;
 
+        // block candidate?
         var isBlockCandidate = headerValue <= blockTargetValue;
 
-        if (!isBlockCandidate && ratio < 0.99)
+        // meets miner diff?
+        if(!isBlockCandidate && ratio < 0.99)
         {
-            if (context.VarDiff?.LastUpdate != null && context.PreviousDifficulty.HasValue)
+            if(context.VarDiff?.LastUpdate != null && context.PreviousDifficulty.HasValue)
             {
                 ratio = shareDiff / context.PreviousDifficulty.Value;
-                if (ratio < 0.99)
+                if(ratio < 0.99)
                     throw new StratumException(StratumError.LowDifficultyShare, $"low difficulty share ({shareDiff})");
 
                 stratumDifficulty = context.PreviousDifficulty.Value;
@@ -354,7 +399,7 @@ public class HodlcoinJob
             Difficulty = stratumDifficulty / shareMultiplier,
         };
 
-        if (isBlockCandidate)
+        if(isBlockCandidate)
         {
             result.IsBlockCandidate = true;
 
@@ -376,13 +421,12 @@ public class HodlcoinJob
         var extraNonce1Bytes = extraNonce1.HexToByteArray();
         var extraNonce2Bytes = extraNonce2.HexToByteArray();
 
-        using (var stream = new MemoryStream())
+        using(var stream = new MemoryStream())
         {
             stream.Write(coinbaseInitial);
             stream.Write(extraNonce1Bytes);
             stream.Write(extraNonce2Bytes);
             stream.Write(coinbaseFinal);
-
             return stream.ToArray();
         }
     }
@@ -390,9 +434,9 @@ public class HodlcoinJob
     protected virtual byte[] SerializeBlock(byte[] header, byte[] coinbase)
     {
         var rawTransactionBuffer = BuildRawTransactionBuffer();
-        var transactionCount = (uint)BlockTemplate.Transactions.Length + 1;
+        var transactionCount = (uint) BlockTemplate.Transactions.Length + 1; // + coinbase
 
-        using (var stream = new MemoryStream())
+        using(var stream = new MemoryStream())
         {
             var bs = new BitcoinStream(stream, true);
 
@@ -401,8 +445,9 @@ public class HodlcoinJob
             bs.ReadWrite(ref coinbase);
             bs.ReadWrite(ref rawTransactionBuffer);
 
-            if (isPoS)
-                bs.ReadWrite((byte)0);
+            // POS coins: append zero byte (daemon replaces with signature)
+            if(isPoS)
+                bs.ReadWrite((byte) 0);
 
             return stream.ToArray();
         }
@@ -410,48 +455,115 @@ public class HodlcoinJob
 
     protected virtual byte[] BuildRawTransactionBuffer()
     {
-        using (var stream = new MemoryStream())
-        {
-            foreach (var tx in BlockTemplate.Transactions)
-            {
-                var txRaw = tx.Data.HexToByteArray();
-                stream.Write(txRaw);
-            }
-
-            return stream.ToArray();
-        }
+        using var stream = new MemoryStream();
+        foreach(var tx in BlockTemplate.Transactions)
+            stream.Write(tx.Data.HexToByteArray());
+        return stream.ToArray();
     }
 
-    #region Masternodes
-    protected MasterNodeBlockTemplateExtra masterNodeParameters;
+    #endregion
+
+    #region Masternodes/Founder/MinerFund
 
     protected virtual Money CreateMasternodeOutputs(Transaction tx, Money reward)
     {
-        // unchanged…
-        // (left as in your version)
+        if(masterNodeParameters.Masternode != null)
+        {
+            Masternode[] masternodes;
+
+            if(masterNodeParameters.Masternode.Type == JTokenType.Array)
+                masternodes = masterNodeParameters.Masternode.ToObject<Masternode[]>();
+            else
+                masternodes = new[] { masterNodeParameters.Masternode.ToObject<Masternode>() };
+
+            if(masternodes != null)
+            {
+                foreach(var mn in masternodes)
+                {
+                    if(!string.IsNullOrEmpty(mn.Payee))
+                    {
+                        var payeeDestination = BitcoinUtils.AddressToDestination(mn.Payee, network);
+                        var payeeReward = mn.Amount;
+
+                        tx.Outputs.Add(payeeReward, payeeDestination);
+                        reward -= payeeReward;
+                    }
+                }
+            }
+        }
+
+        if(masterNodeParameters.SuperBlocks is { Length: > 0 })
+        {
+            foreach(var superBlock in masterNodeParameters.SuperBlocks)
+            {
+                var payeeAddress = BitcoinUtils.AddressToDestination(superBlock.Payee, network);
+                var payeeReward = superBlock.Amount;
+
+                tx.Outputs.Add(payeeReward, payeeAddress);
+                reward -= payeeReward;
+            }
+        }
+
+        if(!coin.HasPayee && !string.IsNullOrEmpty(masterNodeParameters.Payee))
+        {
+            var payeeAddress = BitcoinUtils.AddressToDestination(masterNodeParameters.Payee, network);
+            var payeeReward = masterNodeParameters.PayeeAmount;
+
+            tx.Outputs.Add(payeeReward, payeeAddress);
+            reward -= payeeReward;
+        }
+
         return reward;
     }
-    #endregion
 
-    #region Founder
-    protected FounderBlockTemplateExtra founderParameters;
     protected virtual Money CreateFounderOutputs(Transaction tx, Money reward)
     {
-        // unchanged…
+        if (founderParameters.Founder != null)
+        {
+            Founder[] founders;
+
+            if (founderParameters.Founder.Type == JTokenType.Array)
+                founders = founderParameters.Founder.ToObject<Founder[]>();
+            else
+                founders = new[] { founderParameters.Founder.ToObject<Founder>() };
+
+            if(founders != null)
+            {
+                foreach(var f in founders)
+                {
+                    if(!string.IsNullOrEmpty(f.Payee))
+                    {
+                        var payeeAddress = BitcoinUtils.AddressToDestination(f.Payee, network);
+                        var payeeReward = f.Amount;
+
+                        tx.Outputs.Add(payeeReward, payeeAddress);
+                        reward -= payeeReward;
+                    }
+                }
+            }
+        }
+
         return reward;
     }
-    #endregion
 
-    #region Minerfund
-    protected MinerFundTemplateExtra minerFundParameters;
     protected virtual Money CreateMinerFundOutputs(Transaction tx, Money reward)
     {
-        // unchanged…
+        var payeeReward = minerFundParameters.MinimumValue;
+
+        var addr = minerFundParameters.Addresses?.FirstOrDefault();
+        if (!string.IsNullOrEmpty(addr))
+        {
+            var payeeAddress = BitcoinUtils.AddressToDestination(addr, network);
+            tx.Outputs.Add(payeeReward, payeeAddress);
+        }
+
+        reward -= payeeReward;
         return reward;
     }
+
     #endregion
 
-    #region API-Surface
+    #region API Surface
 
     public BlockTemplate BlockTemplate { get; protected set; }
     public double Difficulty { get; protected set; }
@@ -464,15 +576,84 @@ public class HodlcoinJob
         bool isPoS, double shareMultiplier, IHashAlgorithm coinbaseHasher,
         IHashAlgorithm headerHasher, IHashAlgorithm blockHasher)
     {
-        // unchanged init…
+        Contract.RequiresNonNull(blockTemplate);
+        Contract.RequiresNonNull(pc);
+        Contract.RequiresNonNull(cc);
+        Contract.RequiresNonNull(clock);
+        Contract.RequiresNonNull(poolAddressDestination);
+        Contract.RequiresNonNull(coinbaseHasher);
+        Contract.RequiresNonNull(headerHasher);
+        Contract.RequiresNonNull(blockHasher);
+        Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(jobId));
+
+        coin = pc.Template.As<HodlcoinTemplate>();
+        networkParams = coin.GetNetwork(network.ChainName);
+        txVersion = coin.CoinbaseTxVersion;
+
+        this.network = network;
+        this.clock = clock;
+        this.poolAddressDestination = poolAddressDestination;
         BlockTemplate = blockTemplate;
         JobId = jobId;
 
-        // …after BlockTemplate is set but BEFORE BuildMerkleBranches/BuildCoinbase:
-        SetBirthdaysFromTemplate(BlockTemplate);
+        var coinbaseString = !string.IsNullOrEmpty(cc.PaymentProcessing?.CoinbaseString)
+            ? cc.PaymentProcessing.CoinbaseString.Trim()
+            : "Miningcore";
 
+        scriptSigFinalBytes = new Script(Op.GetPushOp(Encoding.UTF8.GetBytes(coinbaseString))).ToBytes();
+
+        Difficulty = new Target(System.Numerics.BigInteger.Parse(BlockTemplate.Target, NumberStyles.HexNumber)).Difficulty;
+
+        extraNoncePlaceHolderLength = HodlcoinConstants.ExtranoncePlaceHolderLength;
+        this.isPoS = isPoS;
+        this.shareMultiplier = shareMultiplier;
+
+        txComment = !string.IsNullOrEmpty(extraPoolConfig?.CoinbaseTxComment)
+            ? extraPoolConfig.CoinbaseTxComment
+            : coin.CoinbaseTxComment;
+
+        if(coin.HasMasterNodes)
+        {
+            masterNodeParameters = BlockTemplate.Extra.SafeExtensionDataAs<MasterNodeBlockTemplateExtra>();
+
+            if(!string.IsNullOrEmpty(masterNodeParameters.CoinbasePayload))
+            {
+                txVersion = 3;
+                const uint txType = 5;
+                txVersion += txType << 16;
+            }
+        }
+
+        if(coin.HasPayee)
+            payeeParameters = BlockTemplate.Extra.SafeExtensionDataAs<PayeeBlockTemplateExtra>();
+
+        if(coin.HasFounderFee)
+            founderParameters = BlockTemplate.Extra.SafeExtensionDataAs<FounderBlockTemplateExtra>();
+
+        if(coin.HasMinerFund)
+            minerFundParameters = BlockTemplate.Extra.SafeExtensionDataAs<MinerFundTemplateExtra>("coinbasetxn", "minerfund");
+
+        this.coinbaseHasher = coinbaseHasher;
+        this.headerHasher = headerHasher;
+        this.blockHasher = blockHasher;
+
+        if(!string.IsNullOrEmpty(BlockTemplate.Target))
+            blockTargetValue = new uint256(BlockTemplate.Target);
+        else
+        {
+            var tmp = new Target(BlockTemplate.Bits.HexToByteArray());
+            blockTargetValue = tmp.ToUInt256();
+        }
+
+        previousBlockHashReversedHex = BlockTemplate.PreviousBlockhash
+            .HexToByteArray()
+            .ReverseByteOrder()
+            .ToHexString();
+
+        // Build merkle, coinbase, and pick up per-job birthdays
         BuildMerkleBranches();
         BuildCoinbase();
+        SetBirthdaysFromTemplate(BlockTemplate);
 
         jobParams = new object[]
         {
@@ -494,10 +675,55 @@ public class HodlcoinJob
         return jobParams;
     }
 
+    /// <summary>
+    /// Accepts optional versionBits and (HODL) optional birthdayA/birthdayB (hex, LE).
+    /// </summary>
     public virtual (Share Share, string BlockHex) ProcessShare(StratumConnection worker,
-        string extraNonce2, string nTime, string nonce, string versionBits = null)
+        string extraNonce2, string nTime, string nonce, string versionBits = null,
+        string birthdayAHex = null, string birthdayBHex = null)
     {
-        // unchanged except context type is HodlcoinWorkerContext
-        return ProcessShareInternal(worker, extraNonce2, uint.Parse(nTime, NumberStyles.HexNumber),
-            uint.Parse(nonce, NumberStyles.HexNumber),
-            versionBits != null ? uint.Parse(versionBits, NumberStyles.HexNum
+        Contract.RequiresNonNull(worker);
+        Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(extraNonce2));
+        Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(nTime));
+        Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(nonce));
+
+        var context = worker.ContextAs<HodlcoinWorkerContext>();
+
+        // validate nTime
+        if(nTime.Length != 8)
+            throw new StratumException(StratumError.Other, "incorrect size of ntime");
+
+        var nTimeInt = uint.Parse(nTime, NumberStyles.HexNumber);
+        if(nTimeInt < BlockTemplate.CurTime || nTimeInt > ((DateTimeOffset) clock.Now).ToUnixTimeSeconds() + 7200)
+            throw new StratumException(StratumError.Other, "ntime out of range");
+
+        // validate nonce
+        if(nonce.Length != 8)
+            throw new StratumException(StratumError.Other, "incorrect size of nonce");
+
+        var nonceInt = uint.Parse(nonce, NumberStyles.HexNumber);
+
+        // version-rolling
+        uint versionBitsInt = 0;
+        if(context.VersionRollingMask.HasValue && versionBits != null)
+        {
+            versionBitsInt = uint.Parse(versionBits, NumberStyles.HexNumber);
+            if((versionBitsInt & ~context.VersionRollingMask.Value) != 0)
+                throw new StratumException(StratumError.Other, "rolling-version mask violation");
+        }
+
+        // dupe check (before touching birthdays)
+        if(!RegisterSubmit(context.ExtraNonce1, extraNonce2, nTime, nonce))
+            throw new StratumException(StratumError.DuplicateShare, "duplicate share");
+
+        // optional birthdays from miner (hex LE, up to 8 chars)
+        if (!string.IsNullOrEmpty(birthdayAHex) && birthdayAHex.Length <= 8)
+            birthdayA = Convert.ToUInt32(birthdayAHex, 16);
+        if (!string.IsNullOrEmpty(birthdayBHex) && birthdayBHex.Length <= 8)
+            birthdayB = Convert.ToUInt32(birthdayBHex, 16);
+
+        return ProcessShareInternal(worker, extraNonce2, nTimeInt, nonceInt, versionBitsInt);
+    }
+
+    #endregion
+}
