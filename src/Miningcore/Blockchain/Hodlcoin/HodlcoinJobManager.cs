@@ -29,9 +29,6 @@ public class HodlcoinJobManager : HodlcoinJobManagerBase<HodlcoinJob>
 
     private HodlcoinTemplate coin;
 
-    /// <summary>
-    /// Base returns ["capabilities", {"rules": ["segwit"]}, ...] etc.; append coin-specific extras if configured.
-    /// </summary>
     protected override object[] GetBlockTemplateParams()
     {
         var result = base.GetBlockTemplateParams();
@@ -47,41 +44,27 @@ public class HodlcoinJobManager : HodlcoinJobManagerBase<HodlcoinJob>
         return result;
     }
 
-    /// <summary>
-    /// Fetch a fresh blocktemplate from hodlcoind (RPC: getblocktemplate).
-    /// </summary>
     protected async Task<RpcResponse<BlockTemplate>> GetBlockTemplateAsync(CancellationToken ct)
     {
-        // Use the literal RPC method to avoid any Bitcoin-namespace constants
         const string rpcMethod = "getblocktemplate";
-
         var args = extraPoolConfig?.GBTArgs ?? (object) GetBlockTemplateParams();
 
-        var result = await rpc.ExecuteAsync<BlockTemplate>(
-            logger, rpcMethod, ct, args);
-
+        var result = await rpc.ExecuteAsync<BlockTemplate>(logger, rpcMethod, ct, args);
         return result;
     }
 
-    /// <summary>
-    /// Used by overrides/tests to inject a template JSON blob.
-    /// </summary>
     protected RpcResponse<BlockTemplate> GetBlockTemplateFromJson(string json)
     {
         var result = JsonConvert.DeserializeObject<JsonRpcResponse>(json);
         return new RpcResponse<BlockTemplate>(result!.ResultAs<BlockTemplate>());
     }
 
-    private HodlcoinJob CreateJob()
-    {
-        return new HodlcoinJob();
-    }
+    private HodlcoinJob CreateJob() => new();
 
     protected override void PostChainIdentifyConfigure()
     {
         base.PostChainIdentifyConfigure();
 
-        // Initialize configured hashers if they need pool-config context
         if(poolConfig.EnableInternalStratum == true && coin.HeaderHasherValue is IHashAlgorithmInit hashInit)
         {
             if(!hashInit.DigestInit(poolConfig))
@@ -89,9 +72,6 @@ public class HodlcoinJobManager : HodlcoinJobManagerBase<HodlcoinJob>
         }
     }
 
-    /// <summary>
-    /// Core job refresh loop. Creates and publishes a HodlcoinJob when the tip changes or when forced.
-    /// </summary>
     protected override async Task<(bool IsNew, bool Force)> UpdateJob(CancellationToken ct, bool forceUpdate, string via = null, string json = null)
     {
         try
@@ -103,7 +83,6 @@ public class HodlcoinJobManager : HodlcoinJobManagerBase<HodlcoinJob>
                 ? await GetBlockTemplateAsync(ct)
                 : GetBlockTemplateFromJson(json);
 
-            // may happen if daemon is currently not connected to peers
             if(response.Error != null)
             {
                 logger.Warn(() => $"Unable to update job. Daemon responded with: {response.Error.Message} Code {response.Error.Code}");
@@ -125,20 +104,17 @@ public class HodlcoinJobManager : HodlcoinJobManagerBase<HodlcoinJob>
             {
                 job = CreateJob();
 
-                // Init wires everything up (coinbase, merkle, targets, etc.)
                 job.Init(blockTemplate, NextJobId(),
                     poolConfig, extraPoolConfig, clusterConfig, clock, poolAddressDestination, network, isPoS,
                     ShareMultiplier, coin.CoinbaseHasherValue, coin.HeaderHasherValue,
                     !isPoS ? coin.BlockHasherValue : coin.PoSBlockHasherValue ?? coin.BlockHasherValue);
 
-                // NOTE: HodlcoinJob.Init already calls SetBirthdaysFromTemplate(BlockTemplate)
-                //       so birthdayA/birthdayB are ready before first serialize.
+                // pick up per-job birthdays from template (if present)
+                job.SetBirthdaysFromTemplate(blockTemplate);
 
                 lock(jobLock)
                 {
                     validJobs.Insert(0, job);
-
-                    // trim active jobs
                     while(validJobs.Count > maxActiveJobs)
                         validJobs.RemoveAt(validJobs.Count - 1);
                 }
@@ -150,14 +126,12 @@ public class HodlcoinJobManager : HodlcoinJobManagerBase<HodlcoinJob>
                     else
                         logger.Info(() => $"Detected new block {blockTemplate.Height}");
 
-                    // update stats
                     BlockchainStats.LastNetworkBlockTime = clock.Now;
                     BlockchainStats.BlockHeight = blockTemplate.Height;
                     BlockchainStats.NetworkDifficulty = job.Difficulty;
                     BlockchainStats.NextNetworkTarget = blockTemplate.Target;
                     BlockchainStats.NextNetworkBits = blockTemplate.Bits;
                 }
-
                 else
                 {
                     if(via != null)
@@ -171,10 +145,7 @@ public class HodlcoinJobManager : HodlcoinJobManagerBase<HodlcoinJob>
 
             return (isNew, forceUpdate);
         }
-        catch(OperationCanceledException)
-        {
-            // ignored
-        }
+        catch(OperationCanceledException) { }
         catch(Exception ex)
         {
             logger.Error(ex, () => $"Error during {nameof(UpdateJob)}");
@@ -211,58 +182,59 @@ public class HodlcoinJobManager : HodlcoinJobManagerBase<HodlcoinJob>
 
         var context = worker.ContextAs<HodlcoinWorkerContext>();
 
-        // assign unique ExtraNonce1 to worker (miner)
+        // assign unique ExtraNonce1
         context.ExtraNonce1 = extraNonceProvider.Next();
 
-        // setup response data
-        var responseData = new object[]
+        return new object[]
         {
             context.ExtraNonce1,
             HodlcoinConstants.ExtranoncePlaceHolderLength - ExtranonceBytes,
         };
-
-        return responseData;
     }
 
-    public virtual async ValueTask<Share> SubmitShareAsync(StratumConnection worker, object submission, CancellationToken ct)
+    public override async ValueTask<Share> SubmitShareAsync(StratumConnection worker, object submission, CancellationToken ct)
     {
         Contract.RequiresNonNull(worker);
         Contract.RequiresNonNull(submission);
 
-        if(submission is not object[] submitParams)
+        if(submission is not object[] p || p.Length < 5)
             throw new StratumException(StratumError.Other, "invalid params");
 
         var context = worker.ContextAs<HodlcoinWorkerContext>();
 
-        // extract params
-        var workerValue = (submitParams[0] as string)?.Trim();
-        var jobId       = submitParams[1] as string;
-        var extraNonce2 = submitParams[2] as string;
-        var nTime       = submitParams[3] as string;
-        var nonce       = submitParams[4] as string;
+        var workerValue = (p[0] as string)?.Trim();
+        var jobId       = p[1] as string;
+        var extraNonce2 = p[2] as string;
+        var nTime       = p[3] as string;
+        var nonce       = p[4] as string;
 
-        // overt version-rolling (optional)
-        var versionBits = context.VersionRollingMask.HasValue
-            ? submitParams.ElementAtOrDefault(5) as string
-            : null;
+        // optional version-bits, then optional birthdays
+        string versionBits = null;
+        string birthdayA   = null;
+        string birthdayB   = null;
+
+        var idx = 5;
+
+        if(context.VersionRollingMask.HasValue && p.Length > idx)
+            versionBits = p[idx++] as string;
+
+        if(p.Length > idx) birthdayA = p[idx++] as string;
+        if(p.Length > idx) birthdayB = p[idx++] as string;
 
         if(string.IsNullOrEmpty(workerValue))
             throw new StratumException(StratumError.Other, "missing or invalid workername");
 
         HodlcoinJob job;
-
         lock(jobLock)
-        {
             job = validJobs.FirstOrDefault(x => x.JobId == jobId);
-        }
 
         if(job == null)
             throw new StratumException(StratumError.JobNotFound, "job not found");
 
-        // validate & process
-        var (share, blockHex) = job.ProcessShare(worker, extraNonce2, nTime, nonce, versionBits);
+        // process (validates sizes, calculates diff, detects block-candidate)
+        var (share, blockHex) = job.ProcessShare(worker, extraNonce2, nTime, nonce, versionBits, birthdayA, birthdayB);
 
-        // enrich share with common data
+        // enrich
         share.PoolId    = poolConfig.Id;
         share.IpAddress = worker.RemoteEndpoint.Address.ToString();
         share.Miner     = context.Miner;
@@ -271,28 +243,24 @@ public class HodlcoinJobManager : HodlcoinJobManagerBase<HodlcoinJob>
         share.Source    = clusterConfig.ClusterName;
         share.Created   = clock.Now;
 
-        // if block candidate, submit & check if accepted by network
+        // submit candidate
         if(share.IsBlockCandidate)
         {
             logger.Info(() => $"Submitting block {share.BlockHeight} [{share.BlockHash}]");
 
             var acceptResponse = await SubmitBlockAsync(share, blockHex, ct);
 
-            // is it still a block candidate?
             share.IsBlockCandidate = acceptResponse.Accepted;
 
             if(share.IsBlockCandidate)
             {
                 logger.Info(() => $"Daemon accepted block {share.BlockHeight} [{share.BlockHash}] submitted by {context.Miner}");
-
                 OnBlockFound();
 
-                // persist the coinbase transaction-hash for the payment processor
                 share.TransactionConfirmationData = acceptResponse.CoinbaseTx;
             }
             else
             {
-                // clear fields that no longer apply
                 share.TransactionConfirmationData = null;
             }
         }
@@ -302,5 +270,5 @@ public class HodlcoinJobManager : HodlcoinJobManagerBase<HodlcoinJob>
 
     public double ShareMultiplier => coin.ShareMultiplier;
 
-    #endregion // API-Surface
+    #endregion
 }
