@@ -1,6 +1,6 @@
 using Autofac;
-using Miningcore.Blockchain.Bitcoin.Configuration;
-using Miningcore.Blockchain.Bitcoin.DaemonResponses;
+using Miningcore.Blockchain.Hodlcoin.Configuration;
+using Miningcore.Blockchain.Hodlcoin.DaemonResponses;
 using Miningcore.Configuration;
 using Miningcore.Contracts;
 using Miningcore.Crypto;
@@ -16,9 +16,9 @@ using NLog;
 
 namespace Miningcore.Blockchain.Hodlcoin;
 
-public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
+public class HodlcoinJobManager : HodlcoinJobManagerBase<HodlcoinJob>
 {
-    public BitcoinJobManager(
+    public HodlcoinJobManager(
         IComponentContext ctx,
         IMasterClock clock,
         IMessageBus messageBus,
@@ -27,8 +27,11 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
     {
     }
 
-    private BitcoinTemplate coin;
+    private HodlcoinTemplate coin;
 
+    /// <summary>
+    /// Base returns ["capabilities", {"rules": ["segwit"]}, ...] etc.; append coin-specific extras if configured.
+    /// </summary>
     protected override object[] GetBlockTemplateParams()
     {
         var result = base.GetBlockTemplateParams();
@@ -44,30 +47,41 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
         return result;
     }
 
+    /// <summary>
+    /// Fetch a fresh blocktemplate from hodlcoind (RPC: getblocktemplate).
+    /// </summary>
     protected async Task<RpcResponse<BlockTemplate>> GetBlockTemplateAsync(CancellationToken ct)
     {
-        var result = await rpc.ExecuteAsync<BlockTemplate>(logger,
-            BitcoinCommands.GetBlockTemplate, ct, extraPoolConfig?.GBTArgs ?? (object) GetBlockTemplateParams());
+        // Use the literal RPC method to avoid any Bitcoin-namespace constants
+        const string rpcMethod = "getblocktemplate";
+
+        var args = extraPoolConfig?.GBTArgs ?? (object) GetBlockTemplateParams();
+
+        var result = await rpc.ExecuteAsync<BlockTemplate>(
+            logger, rpcMethod, ct, args);
 
         return result;
     }
 
+    /// <summary>
+    /// Used by overrides/tests to inject a template JSON blob.
+    /// </summary>
     protected RpcResponse<BlockTemplate> GetBlockTemplateFromJson(string json)
     {
         var result = JsonConvert.DeserializeObject<JsonRpcResponse>(json);
-
         return new RpcResponse<BlockTemplate>(result!.ResultAs<BlockTemplate>());
     }
 
-    private BitcoinJob CreateJob()
+    private HodlcoinJob CreateJob()
     {
-        return new();
+        return new HodlcoinJob();
     }
 
     protected override void PostChainIdentifyConfigure()
     {
         base.PostChainIdentifyConfigure();
 
+        // Initialize configured hashers if they need pool-config context
         if(poolConfig.EnableInternalStratum == true && coin.HeaderHasherValue is IHashAlgorithmInit hashInit)
         {
             if(!hashInit.DigestInit(poolConfig))
@@ -75,6 +89,9 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
         }
     }
 
+    /// <summary>
+    /// Core job refresh loop. Creates and publishes a HodlcoinJob when the tip changes or when forced.
+    /// </summary>
     protected override async Task<(bool IsNew, bool Force)> UpdateJob(CancellationToken ct, bool forceUpdate, string via = null, string json = null)
     {
         try
@@ -82,9 +99,9 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
             if(forceUpdate)
                 lastJobRebroadcast = clock.Now;
 
-            var response = string.IsNullOrEmpty(json) ?
-                await GetBlockTemplateAsync(ct) :
-                GetBlockTemplateFromJson(json);
+            var response = string.IsNullOrEmpty(json)
+                ? await GetBlockTemplateAsync(ct)
+                : GetBlockTemplateFromJson(json);
 
             // may happen if daemon is currently not connected to peers
             if(response.Error != null)
@@ -97,9 +114,9 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
             var job = currentJob;
 
             var isNew = job == null ||
-                (blockTemplate != null &&
-                    (job.BlockTemplate?.PreviousBlockhash != blockTemplate.PreviousBlockhash ||
-                        blockTemplate.Height > job.BlockTemplate?.Height));
+                        (blockTemplate != null &&
+                         (job.BlockTemplate?.PreviousBlockhash != blockTemplate.PreviousBlockhash ||
+                          blockTemplate.Height > job.BlockTemplate?.Height));
 
             if(isNew)
                 messageBus.NotifyChainHeight(poolConfig.Id, blockTemplate.Height, poolConfig.Template);
@@ -108,10 +125,14 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
             {
                 job = CreateJob();
 
+                // Init wires everything up (coinbase, merkle, targets, etc.)
                 job.Init(blockTemplate, NextJobId(),
                     poolConfig, extraPoolConfig, clusterConfig, clock, poolAddressDestination, network, isPoS,
                     ShareMultiplier, coin.CoinbaseHasherValue, coin.HeaderHasherValue,
                     !isPoS ? coin.BlockHasherValue : coin.PoSBlockHasherValue ?? coin.BlockHasherValue);
+
+                // NOTE: HodlcoinJob.Init already calls SetBirthdaysFromTemplate(BlockTemplate)
+                //       so birthdayA/birthdayB are ready before first serialize.
 
                 lock(jobLock)
                 {
@@ -150,12 +171,10 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
 
             return (isNew, forceUpdate);
         }
-
         catch(OperationCanceledException)
         {
             // ignored
         }
-
         catch(Exception ex)
         {
             logger.Error(ex, () => $"Error during {nameof(UpdateJob)}");
@@ -174,9 +193,9 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
 
     public override void Configure(PoolConfig pc, ClusterConfig cc)
     {
-        coin = pc.Template.As<BitcoinTemplate>();
-        extraPoolConfig = pc.Extra.SafeExtensionDataAs<BitcoinPoolConfigExtra>();
-        extraPoolPaymentProcessingConfig = pc.PaymentProcessing?.Extra?.SafeExtensionDataAs<BitcoinPoolPaymentProcessingConfigExtra>();
+        coin = pc.Template.As<HodlcoinTemplate>();
+        extraPoolConfig = pc.Extra.SafeExtensionDataAs<HodlcoinPoolConfigExtra>();
+        extraPoolPaymentProcessingConfig = pc.PaymentProcessing?.Extra?.SafeExtensionDataAs<HodlcoinPoolPaymentProcessingConfigExtra>();
 
         if(extraPoolConfig?.MaxActiveJobs.HasValue == true)
             maxActiveJobs = extraPoolConfig.MaxActiveJobs.Value;
@@ -190,7 +209,7 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
     {
         Contract.RequiresNonNull(worker);
 
-        var context = worker.ContextAs<BitcoinWorkerContext>();
+        var context = worker.ContextAs<HodlcoinWorkerContext>();
 
         // assign unique ExtraNonce1 to worker (miner)
         context.ExtraNonce1 = extraNonceProvider.Next();
@@ -199,14 +218,13 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
         var responseData = new object[]
         {
             context.ExtraNonce1,
-            BitcoinConstants.ExtranoncePlaceHolderLength - ExtranonceBytes,
+            HodlcoinConstants.ExtranoncePlaceHolderLength - ExtranonceBytes,
         };
 
         return responseData;
     }
 
-    public virtual async ValueTask<Share> SubmitShareAsync(StratumConnection worker, object submission,
-        CancellationToken ct)
+    public virtual async ValueTask<Share> SubmitShareAsync(StratumConnection worker, object submission, CancellationToken ct)
     {
         Contract.RequiresNonNull(worker);
         Contract.RequiresNonNull(submission);
@@ -214,20 +232,24 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
         if(submission is not object[] submitParams)
             throw new StratumException(StratumError.Other, "invalid params");
 
-        var context = worker.ContextAs<BitcoinWorkerContext>();
+        var context = worker.ContextAs<HodlcoinWorkerContext>();
 
         // extract params
         var workerValue = (submitParams[0] as string)?.Trim();
-        var jobId = submitParams[1] as string;
+        var jobId       = submitParams[1] as string;
         var extraNonce2 = submitParams[2] as string;
-        var nTime = submitParams[3] as string;
-        var nonce = submitParams[4] as string;
-        var versionBits = context.VersionRollingMask.HasValue ? submitParams[5] as string : null;
+        var nTime       = submitParams[3] as string;
+        var nonce       = submitParams[4] as string;
+
+        // overt version-rolling (optional)
+        var versionBits = context.VersionRollingMask.HasValue
+            ? submitParams.ElementAtOrDefault(5) as string
+            : null;
 
         if(string.IsNullOrEmpty(workerValue))
             throw new StratumException(StratumError.Other, "missing or invalid workername");
 
-        BitcoinJob job;
+        HodlcoinJob job;
 
         lock(jobLock)
         {
@@ -241,13 +263,13 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
         var (share, blockHex) = job.ProcessShare(worker, extraNonce2, nTime, nonce, versionBits);
 
         // enrich share with common data
-        share.PoolId = poolConfig.Id;
+        share.PoolId    = poolConfig.Id;
         share.IpAddress = worker.RemoteEndpoint.Address.ToString();
-        share.Miner = context.Miner;
-        share.Worker = context.Worker;
+        share.Miner     = context.Miner;
+        share.Worker    = context.Worker;
         share.UserAgent = context.UserAgent;
-        share.Source = clusterConfig.ClusterName;
-        share.Created = clock.Now;
+        share.Source    = clusterConfig.ClusterName;
+        share.Created   = clock.Now;
 
         // if block candidate, submit & check if accepted by network
         if(share.IsBlockCandidate)
@@ -265,11 +287,9 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
 
                 OnBlockFound();
 
-                // persist the coinbase transaction-hash to allow the payment processor
-                // to verify later on that the pool has received the reward for the block
+                // persist the coinbase transaction-hash for the payment processor
                 share.TransactionConfirmationData = acceptResponse.CoinbaseTx;
             }
-
             else
             {
                 // clear fields that no longer apply
