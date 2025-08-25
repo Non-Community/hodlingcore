@@ -287,8 +287,8 @@ public class HodlcoinPool : PoolBase
         if(extensionParams.TryGetValue(HodlcoinStratumExtensions.VersionRollingMask, out var requestedMaskValue))
             requestedMask = uint.Parse(requestedMaskValue.Value<string>(), NumberStyles.HexNumber);
 
-        // Compute effective mask
-        context.VersionRollingMask = BitcoinConstants.VersionRollingPoolMask & requestedMask;
+        // Compute effective mask (stay in Hodl space)
+        context.VersionRollingMask = HodlcoinConstants.VersionRollingPoolMask & requestedMask;
 
         // enabled
         result[HodlcoinStratumExtensions.VersionRolling] = true;
@@ -361,7 +361,8 @@ public class HodlcoinPool : PoolBase
     protected override async Task SetupJobManager(CancellationToken ct)
     {
         manager = ctx.Resolve<HodlcoinJobManager>(
-            new TypedParameter(typeof(IExtraNonceProvider), new BitcoinExtraNonceProvider(poolConfig.Id, clusterConfig.InstanceId)));
+            new TypedParameter(typeof(IExtraNonceProvider),
+                new HodlcoinExtraNonceProvider(poolConfig.Id, clusterConfig.InstanceId)));
 
         manager.Configure(poolConfig, clusterConfig);
 
