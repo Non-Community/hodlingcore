@@ -2,8 +2,8 @@ using System.Globalization;
 using System.Reactive;
 using System.Reactive.Linq;
 using Autofac;
-using Miningcore.Blockchain.Bitcoin.Configuration;
-using Miningcore.Blockchain.Bitcoin.DaemonResponses;
+using Miningcore.Blockchain.Hodlcoin.Configuration;
+using Miningcore.Blockchain.Hodlcoin.DaemonResponses;
 using Miningcore.Configuration;
 using Miningcore.Contracts;
 using Miningcore.Extensions;
@@ -19,9 +19,9 @@ using static Miningcore.Util.ActionUtils;
 
 namespace Miningcore.Blockchain.Hodlcoin;
 
-public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
+public abstract class HodlcoinJobManagerBase<TJob> : JobManagerBase<TJob>
 {
-    protected BitcoinJobManagerBase(
+    protected HodlcoinJobManagerBase(
         IComponentContext ctx,
         IMasterClock clock,
         IMessageBus messageBus,
@@ -43,8 +43,8 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
     protected const int ExtranonceBytes = 4;
     protected int maxActiveJobs = 4;
     protected bool hasLegacyDaemon;
-    protected BitcoinPoolConfigExtra extraPoolConfig;
-    protected BitcoinPoolPaymentProcessingConfigExtra extraPoolPaymentProcessingConfig;
+    protected HodlcoinPoolConfigExtra extraPoolConfig;
+    protected HodlcoinPoolPaymentProcessingConfigExtra extraPoolPaymentProcessingConfig;
     protected readonly List<TJob> validJobs = new();
     protected DateTime? lastJobRebroadcast;
     protected bool hasSubmitBlockMethod;
@@ -82,8 +82,8 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
                 .Where(x => !string.IsNullOrEmpty(x.Extra.SafeExtensionDataAs<BitcoinDaemonEndpointConfigExtra>()?.ZmqBlockNotifySocket))
                 .ToDictionary(x => x, x =>
                 {
-                    var extra = x.Extra.SafeExtensionDataAs<BitcoinDaemonEndpointConfigExtra>();
-                    var topic = !string.IsNullOrEmpty(extra.ZmqBlockNotifyTopic?.Trim()) ? extra.ZmqBlockNotifyTopic.Trim() : BitcoinConstants.ZmqPublisherTopicBlockHash;
+                    var extra = x.Extra.SafeExtensionDataAs<HodlcoinDaemonEndpointConfigExtra>();
+                    var topic = !string.IsNullOrEmpty(extra.ZmqBlockNotifyTopic?.Trim()) ? extra.ZmqBlockNotifyTopic.Trim() : HodlcoinConstants.ZmqPublisherTopicBlockHash;
 
                     return (Socket: extra.ZmqBlockNotifySocket, Topic: topic);
                 });
@@ -199,7 +199,7 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
             return;
         }
 
-        var info = await rpc.ExecuteAsync<BlockchainInfo>(logger, BitcoinCommands.GetBlockchainInfo, ct);
+        var info = await rpc.ExecuteAsync<BlockchainInfo>(logger, HodlcoinCommands.GetBlockchainInfo, ct);
 
         if(info != null)
         {
@@ -208,7 +208,7 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
             if(blockCount.HasValue)
             {
                 // get list of peers and their highest block height to compare to ours
-                var peerInfo = await rpc.ExecuteAsync<PeerInfo[]>(logger, BitcoinCommands.GetPeerInfo, ct);
+                var peerInfo = await rpc.ExecuteAsync<PeerInfo[]>(logger, HodlcoinCommands.GetPeerInfo, ct);
                 var peers = peerInfo.Response;
 
                 var totalBlocks = Math.Max(info.Response.Headers, peers.Any() ? peers.Max(y => y.StartingHeight) : 0);
@@ -224,9 +224,9 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
         try
         {
             var results = await rpc.ExecuteBatchAsync(logger, ct,
-                new RpcRequest(BitcoinCommands.GetMiningInfo),
-                new RpcRequest(BitcoinCommands.GetNetworkInfo),
-                new RpcRequest(BitcoinCommands.GetNetworkHashPS)
+                new RpcRequest(HodlcoinCommands.GetMiningInfo),
+                new RpcRequest(HodlcoinCommands.GetNetworkInfo),
+                new RpcRequest(HodlcoinCommands.GetNetworkHashPS)
             );
 
             if(results.Any(x => x.Error != null))
@@ -259,13 +259,13 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
     protected async Task<SubmitResult> SubmitBlockAsync(Share share, string blockHex, CancellationToken ct)
     {
         var submitBlockRequest = hasSubmitBlockMethod
-            ? new RpcRequest(BitcoinCommands.SubmitBlock, new[] { blockHex })
-            : new RpcRequest(BitcoinCommands.GetBlockTemplate, new { mode = "submit", data = blockHex });
+            ? new RpcRequest(HodlcoinCommands.SubmitBlock, new[] { blockHex })
+            : new RpcRequest(HodlcoinCommands.GetBlockTemplate, new { mode = "submit", data = blockHex });
 
         var batch = new []
         {
             submitBlockRequest,
-            new RpcRequest(BitcoinCommands.GetBlock, new[] { share.BlockHash })
+            new RpcRequest(HodlcoinCommands.GetBlock, new[] { share.BlockHash })
         };
 
         var results = await rpc.ExecuteBatchAsync(logger, ct, batch);
@@ -299,21 +299,21 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
 
     protected async Task<bool> AreDaemonsHealthyLegacyAsync(CancellationToken ct)
     {
-        var response = await rpc.ExecuteAsync<DaemonInfo>(logger, BitcoinCommands.GetInfo, ct);
+        var response = await rpc.ExecuteAsync<DaemonInfo>(logger, HodlcoinCommands.GetInfo, ct);
 
         return response.Error == null;
     }
 
     protected async Task<bool> AreDaemonsConnectedLegacyAsync(CancellationToken ct)
     {
-        var response = await rpc.ExecuteAsync<DaemonInfo>(logger, BitcoinCommands.GetInfo, ct);
+        var response = await rpc.ExecuteAsync<DaemonInfo>(logger, HodlcoinCommands.GetInfo, ct);
 
         return response.Error == null && response.Response.Connections > 0;
     }
 
     protected async Task ShowDaemonSyncProgressLegacyAsync(CancellationToken ct)
     {
-        var info = await rpc.ExecuteAsync<DaemonInfo>(logger, BitcoinCommands.GetInfo, ct);
+        var info = await rpc.ExecuteAsync<DaemonInfo>(logger, HodlcoinCommands.GetInfo, ct);
 
         if(info != null)
         {
@@ -322,7 +322,7 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
             if(blockCount.HasValue)
             {
                 // get list of peers and their highest block height to compare to ours
-                var peerInfo = await rpc.ExecuteAsync<PeerInfo[]>(logger, BitcoinCommands.GetPeerInfo, ct);
+                var peerInfo = await rpc.ExecuteAsync<PeerInfo[]>(logger, HodlcoinCommands.GetPeerInfo, ct);
                 var peers = peerInfo.Response;
 
                 if(peers != null && peers.Length > 0)
@@ -340,7 +340,7 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
         try
         {
             var results = await rpc.ExecuteBatchAsync(logger, ct,
-                new RpcRequest(BitcoinCommands.GetConnectionCount)
+                new RpcRequest(HodlcoinCommands.GetConnectionCount)
             );
 
             if(results.Any(x => x.Error != null))
@@ -379,7 +379,7 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
         if(hasLegacyDaemon)
             return await AreDaemonsHealthyLegacyAsync(ct);
 
-        var response = await rpc.ExecuteAsync<BlockchainInfo>(logger, BitcoinCommands.GetBlockchainInfo, ct);
+        var response = await rpc.ExecuteAsync<BlockchainInfo>(logger, HodlcoinCommands.GetBlockchainInfo, ct);
 
         return response.Error == null;
     }
@@ -389,7 +389,7 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
         if(hasLegacyDaemon)
             return await AreDaemonsConnectedLegacyAsync(ct);
 
-        var response = await rpc.ExecuteAsync<NetworkInfo>(logger, BitcoinCommands.GetNetworkInfo, ct);
+        var response = await rpc.ExecuteAsync<NetworkInfo>(logger, HodlcoinCommands.GetNetworkInfo, ct);
 
         return response.Error == null && response.Response?.Connections > 0;
     }
@@ -403,7 +403,7 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
         do
         {
             var response = await rpc.ExecuteAsync<BlockTemplate>(logger,
-                BitcoinCommands.GetBlockTemplate, ct, GetBlockTemplateParams());
+                HodlcoinCommands.GetBlockTemplate, ct, GetBlockTemplateParams());
 
             var isSynched = response.Error == null;
 
@@ -427,11 +427,11 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
     {
         var requests = new[]
         {
-            new RpcRequest(BitcoinCommands.ValidateAddress, new[] { poolConfig.Address }),
-            new RpcRequest(BitcoinCommands.SubmitBlock),
+            new RpcRequest(HodlcoinCommands.ValidateAddress, new[] { poolConfig.Address }),
+            new RpcRequest(HodlcoinCommands.SubmitBlock),
             new RpcRequest(!hasLegacyDaemon ? BitcoinCommands.GetBlockchainInfo : BitcoinCommands.GetInfo),
-            new RpcRequest(BitcoinCommands.GetDifficulty),
-            new RpcRequest(BitcoinCommands.GetAddressInfo, new[] { poolConfig.Address }),
+            new RpcRequest(HodlcoinCommands.GetDifficulty),
+            new RpcRequest(HodlcoinCommands.GetAddressInfo, new[] { poolConfig.Address }),
         };
 
         var responses = await rpc.ExecuteBatchAsync(logger, ct, requests);
@@ -441,8 +441,8 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
             // filter out optional RPCs
             var errors = responses
                 .Where((x, i) => x.Error != null &&
-                    requests[i].Method != BitcoinCommands.SubmitBlock &&
-                    requests[i].Method != BitcoinCommands.GetAddressInfo)
+                    requests[i].Method != HodlcoinCommands.SubmitBlock &&
+                    requests[i].Method != HodlcoinCommands.GetAddressInfo)
                 .ToArray();
 
             if(errors.Any())
@@ -469,13 +469,13 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
         if(validateAddressResponse is not {IsValid: true})
             throw new PoolStartupException($"Daemon reports pool-address '{poolConfig.Address}' as invalid", poolConfig.Id);
 
-        isPoS = poolConfig.Template is BitcoinTemplate {IsPseudoPoS: true} ||
+        isPoS = poolConfig.Template is HodlcoinTemplate {IsPseudoPoS: true} ||
             (difficultyResponse.Values().Any(x => x.Path == "proof-of-stake" && !difficultyResponse.Values().Any(x => x.Path == "proof-of-work")));
 
         // Create pool address script from response
         if(!isPoS)
         {
-            if(extraPoolConfig != null && extraPoolConfig.AddressType != BitcoinAddressType.Legacy)
+            if(extraPoolConfig != null && extraPoolConfig.AddressType != HodlcoinAddressType.Legacy)
                 logger.Info(()=> $"Interpreting pool address {poolConfig.Address} as type {extraPoolConfig?.AddressType.ToString()}");
 
             poolAddressDestination = AddressToDestination(poolConfig.Address, extraPoolConfig?.AddressType);
@@ -524,18 +524,18 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
     protected virtual IDestination AddressToDestination(string address, BitcoinAddressType? addressType)
     {
         if(!addressType.HasValue)
-            return BitcoinUtils.AddressToDestination(address, network);
+            return HodlcoinUtils.AddressToDestination(address, network);
 
         switch(addressType.Value)
         {
-            case BitcoinAddressType.BechSegwit:
-                return BitcoinUtils.BechSegwitAddressToDestination(poolConfig.Address, network);
+            case HodlcoinAddressType.BechSegwit:
+                return HodlcoinUtils.BechSegwitAddressToDestination(poolConfig.Address, network);
 
-            case BitcoinAddressType.BCash:
-                return BitcoinUtils.BCashAddressToDestination(poolConfig.Address, network);
+            case HodlcoinAddressType.BCash:
+                return HodlcoinUtils.BCashAddressToDestination(poolConfig.Address, network);
 
             default:
-                return BitcoinUtils.AddressToDestination(poolConfig.Address, network);
+                return HodlcoinUtils.AddressToDestination(poolConfig.Address, network);
         }
     }
 
@@ -556,7 +556,7 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
     public override void Configure(PoolConfig pc, ClusterConfig cc)
     {
         extraPoolConfig = pc.Extra.SafeExtensionDataAs<BitcoinPoolConfigExtra>();
-        extraPoolPaymentProcessingConfig = pc.PaymentProcessing?.Extra?.SafeExtensionDataAs<BitcoinPoolPaymentProcessingConfigExtra>();
+        extraPoolPaymentProcessingConfig = pc.PaymentProcessing?.Extra?.SafeExtensionDataAs<HodlcoinPoolPaymentProcessingConfigExtra>();
 
         if(extraPoolConfig?.MaxActiveJobs.HasValue == true)
             maxActiveJobs = extraPoolConfig.MaxActiveJobs.Value;
@@ -571,7 +571,7 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
         if(string.IsNullOrEmpty(address))
             return false;
 
-        var result = await rpc.ExecuteAsync<ValidateAddressResponse>(logger, BitcoinCommands.ValidateAddress, ct, new[] { address });
+        var result = await rpc.ExecuteAsync<ValidateAddressResponse>(logger, HodlcoinCommands.ValidateAddress, ct, new[] { address });
 
         return result.Response is {IsValid: true};
     }
